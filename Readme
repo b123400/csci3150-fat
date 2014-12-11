@@ -1,0 +1,10 @@
+the disk image is fat32:
+- number of FAT: 2
+- number of bytes per sector: 512
+- number of sectors per cluster: 1
+- number of reserved sector: 32
+
+Mount/Unmount it like this:
+1. Create a folder if you didnt: mkdir /mnt/rd
+2. Mount: mount -t vfat -o loop ./disk /mnt/rd
+3. Unmount: umount /mnt/rd
