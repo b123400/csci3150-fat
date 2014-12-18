@@ -66,8 +66,8 @@ void printUsage() {
 void showBootSectorInfo(char* diskPath) {
     FILE *fp = fopen(diskPath, "r");
 	char buf[512];
-	struct BootEntry *be;
 
+	struct BootEntry *be;
 	if (!fp) {
 		fprintf(stderr, "Cannot find the file.\n");
 		exit(0);
@@ -76,26 +76,33 @@ void showBootSectorInfo(char* diskPath) {
 	fread(buf, sizeof(buf), 1, fp);
 	be = (struct BootEntry *)buf;
 
+	unsigned int sector_total = (be->BPB_TotSec32 - (be->BPB_NumFATs * be->BPB_FATSz32) - be->BPB_RsvdSecCnt)/ be->BPB_SecPerClus;
+
+	unsigned int *fat = malloc(be->BPB_FATSz32 * be->BPB_BytsPerSec);
+	pread(fileno(fp), fat, be->BPB_FATSz32 * be->BPB_BytsPerSec, be->BPB_RsvdSecCnt * be->BPB_BytsPerSec);
+
 	printf("Number of FATs = %u.\n", be->BPB_NumFATs);
 	printf("Numeber of bytes per sector = %u.\n", be->BPB_BytsPerSec);
 	printf("Numeber of sectors per cluster = %u.\n", be->BPB_SecPerClus);
 	printf("Numeber of reserved sectors = %u.\n", be->BPB_RsvdSecCnt);
     
-    unsigned short numberOfEntry = be->BPB_NumFATs * be->BPB_FATSz32 * be->BPB_BytsPerSec;
-    unsigned short i = 0;
-    char pointer;
-    unsigned short emptyCount = 0;
-    while (i < numberOfEntry) {
-        fread(&pointer, sizeof(char*), 1, fp);
-        if (pointer == NULL) {
-            emptyCount++;
-        }
-        i++;
+    int i = 0;
+	int allocated = 0;
+
+	for(i = 2;i < sector_total+2; i++){
+        if(fat[i]){
+		allocated++;
+		}
     }
     
-    printf("total: %u, allocated: %u", numberOfEntry, emptyCount);
-    
+    printf("Number of allocated clusters = %u.\n", allocated);
+    printf("Number of free clusters = %u.\n", sector_total-allocated);   
+
 	fclose(fp);
+}
+
+void listDirectory(char* diskPath) {
+	return;
 }
 
 int main(int argc, char *argv[]) {
@@ -118,7 +125,7 @@ int main(int argc, char *argv[]) {
                 break;
             case 'l':
                 lFlag = 1;
-                printf("l flag = list directory\n");
+                listDirectory(diskPath);
                 break;
             case 'r':
                 rFlag = 1;
