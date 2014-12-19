@@ -51,9 +51,28 @@ struct DirEntry
     unsigned short DIR_WrtDate;
     unsigned short DIR_FstClusLO; 
     unsigned long DIR_FileSize;
+};
 
+struct LfnEntry
+{
+    unsigned char DIR_Sn;
+    unsigned short DIR_Name1[5];
+	unsigned char DIR_Attr;
+	unsigned short DIR_Reserved1;
+	unsigned short DIR_Name2[6];
+	unsigned short DIR_Reserved2;
+	unsigned short DIR_Name3[6];
 };
 #pragma pack(pop)
+
+/* global var */
+struct BootEntry *be;
+unsigned int *fat;
+unsigned int cluster_total;
+struct DirEntry *dirEntries;
+unsigned int numDirEntries;
+unsigned int dataOffset;
+unsigned int cluster_size;
 
 void printUsage() {
     printf("Usage: ./recover -d [device filename] [other arguments]\n");
@@ -63,24 +82,38 @@ void printUsage() {
     printf("-R target -o dest    File recovert with long filename\n");
 }
 
-void showBootSectorInfo(char* diskPath) {
-    FILE *fp = fopen(diskPath, "r");
-    char buf[512];
+void init(char* diskPath) {
+	// get boot entry
+	FILE *fp = fopen(diskPath, "r");
+	be = malloc(sizeof(struct BootEntry));
+	fread(be, sizeof(struct BootEntry), 1, fp);
+	
+	// get fat table
+	cluster_size = be->BPB_BytsPerSec * be->BPB_SecPerClus;
+	cluster_total = (be->BPB_TotSec32 - (be->BPB_NumFATs * be->BPB_FATSz32) - be->BPB_RsvdSecCnt)/ be->BPB_SecPerClus;
+	fat = malloc(be->BPB_FATSz32 * be->BPB_BytsPerSec);
+	pread(fileno(fp), fat, be->BPB_FATSz32 * be->BPB_BytsPerSec, be->BPB_RsvdSecCnt * be->BPB_BytsPerSec);
+	dataOffset = (be->BPB_RsvdSecCnt + be->BPB_NumFATs * be->BPB_FATSz32) * be->BPB_BytsPerSec;
+	
+	// calc root dir entry span
+	unsigned int i;
+	unsigned int rootSpan = 0;
+	struct DirEntry *p;
+	for (i=be->BPB_RootClus; i<0x0FFFFFF7; i=fat[i])
+		rootSpan++;
+	p = dirEntries = malloc(rootSpan * cluster_size);
+	numDirEntries = rootSpan * cluster_size / sizeof(struct DirEntry);
+	
+	// get all directory entries
+	for (i=be->BPB_RootClus; i<0x0FFFFFF7; i=fat[i]) {
+		pread(fileno(fp), p, cluster_size, dataOffset + (i-2)*cluster_size);
+		p += cluster_size/sizeof(struct DirEntry);
+	}
+	
+    fclose(fp);
+}
 
-    struct BootEntry *be;
-    if (!fp) {
-        fprintf(stderr, "Cannot find the file.\n");
-        exit(0);
-    }
-    
-    fread(buf, sizeof(buf), 1, fp);
-    be = (struct BootEntry *)buf;
-
-    unsigned int sector_total = (be->BPB_TotSec32 - (be->BPB_NumFATs * be->BPB_FATSz32) - be->BPB_RsvdSecCnt)/ be->BPB_SecPerClus;
-
-    unsigned int *fat = malloc(be->BPB_FATSz32 * be->BPB_BytsPerSec);
-    pread(fileno(fp), fat, be->BPB_FATSz32 * be->BPB_BytsPerSec, be->BPB_RsvdSecCnt * be->BPB_BytsPerSec);
-
+void showBootSectorInfo() {
     printf("Number of FATs = %u.\n", be->BPB_NumFATs);
     printf("Numeber of bytes per sector = %u.\n", be->BPB_BytsPerSec);
     printf("Numeber of sectors per cluster = %u.\n", be->BPB_SecPerClus);
@@ -88,182 +121,87 @@ void showBootSectorInfo(char* diskPath) {
     
     int i = 0;
     int allocated = 0;
-
-    for(i = 2;i < sector_total+2; i++){
+    for(i = 2;i < cluster_total+2; i++){
         if(fat[i]){
-        allocated++;
+			allocated++;
         }
     }
     
     printf("Number of allocated clusters = %u.\n", allocated);
-    printf("Number of free clusters = %u.\n", sector_total-allocated);   
-
-    fclose(fp);
+    printf("Number of free clusters = %u.\n", cluster_total-allocated);   
 }
 
-int checkFileName(char fname[13], const unsigned char DIR_Name[11]){
+void getsname(int index, char *buffer){
     int i,j;
+	
     for(i=0;i<8;i++){
-        if(DIR_Name[i] != ' '){
-        fname[i] = DIR_Name[i];
-        } else {
-        break;
-        }
+		if (dirEntries[index].DIR_Name[i] == ' ') break;
+		*buffer++ = dirEntries[index].DIR_Name[i];
     }
-    if(DIR_Name[8] != ' '){
-        fname[i++] = '.';
-        for(j=8;j<=10;j++,i++){
-            if(DIR_Name[j] != ' '){
-            fname[i] = DIR_Name[j];
-            } else {
-            break;
-            }
+	if (dirEntries[index].DIR_Name[8] != ' ') {
+		*buffer++ = '.';
+		for(i=8;i<=10;i++){
+			if (dirEntries[index].DIR_Name[i] == ' ') break;
+			*buffer++ = dirEntries[index].DIR_Name[i];
         }
-    }
-    fname[i] = 0;
-    return i;
+	}
+	if (dirEntries[index].DIR_Attr & 0x10)
+		*buffer++ = '/';
+	
+	*buffer = 0;
 }
 
-void listDirectory(char* diskPath) {
-    FILE *fp = fopen(diskPath, "r");
-    char buf[512];
+void getlname(int index, char *buffer) {
+	if (index != 0 && dirEntries[index-1].DIR_Attr != 0x0f) {
+		*buffer = 0;
+		return;
+	}
+	
+	int finish = 0;
+	int j = index - 1;
+	int i;
+	struct LfnEntry *lfn;
+	while (!finish && j>=0 && dirEntries[j].DIR_Attr == 0x0f) {
+		lfn = (struct LfnEntry*) &dirEntries[j];
+		for(i=0; i<5 && !finish; i++){
+			if (lfn->DIR_Name1[i] == 0)
+				finish = 1;
+			else
+				*buffer++ = lfn->DIR_Name1[i];
+		}
+		for(i=0; i<6 && !finish; i++){
+			if (lfn->DIR_Name2[i] == 0)
+				finish = 1;
+			else
+				*buffer++ = lfn->DIR_Name2[i];
+		}
+		for(i=0; i<2 && !finish; i++){
+			if (lfn->DIR_Name3[i] == 0)
+				finish = 1;
+			else
+				*buffer++ = lfn->DIR_Name3[i];
+		}
+		j--;
+	}
+	
+	if (dirEntries[index].DIR_Attr & 0x10)
+		*buffer++ = '/';
+	*buffer = 0;
+}
 
-    struct BootEntry *be;
-    if (!fp) {
-        fprintf(stderr, "Cannot find the file.\n");
-        exit(0);
-    }
-
-    fread(buf, sizeof(buf), 1, fp);
-    be = (struct BootEntry *)buf;
-
-    unsigned int sector_total = (be->BPB_TotSec32 - (be->BPB_NumFATs * be->BPB_FATSz32) - be->BPB_RsvdSecCnt)/ be->BPB_SecPerClus;
-    unsigned int *fat = malloc(be->BPB_FATSz32 * be->BPB_BytsPerSec);
-    pread(fileno(fp), fat, be->BPB_FATSz32 * be->BPB_BytsPerSec, be->BPB_RsvdSecCnt * be->BPB_BytsPerSec);
-
-    int i = 0;
-    int allocated = 0;
-
-    for(i = 2;i < sector_total+2; i++){
-        if(fat[i]){
-        allocated++;
-        }
-    }
-
-    i = be->BPB_RootClus;
-    int Size_rootdir = 1;
-
-    while(fat[i] < 0x0FFFFFF7 && fat[i] > 0){
-        i = fat[i];
-        Size_rootdir++;
-    }
-    int* p = malloc(Size_rootdir * (be->BPB_BytsPerSec * be->BPB_SecPerClus));
-//    int* rootdir_array = malloc(Size_rootdir * (be->BPB_BytsPerSec * be->BPB_SecPerClus));
-
-    i = be->BPB_RootClus;
-
-    int offset = (be->BPB_RsvdSecCnt + be->BPB_NumFATs * be->BPB_FATSz32) * be->BPB_BytsPerSec;
-
-    while(i < 0x0FFFFFF7){
-        pread(fileno(fp), p , (be->BPB_BytsPerSec * be->BPB_SecPerClus) , offset+(i-2)*be->BPB_BytsPerSec*be->BPB_SecPerClus);
-        i = fat[i];
-        p += (be->BPB_BytsPerSec*be->BPB_SecPerClus)/sizeof(struct DirEntry);
-    }    
-
-    unsigned int preSector = be->BPB_RsvdSecCnt + (be->BPB_FATSz32 * be->BPB_NumFATs) - (2 * be->BPB_SecPerClus);
-    unsigned int ClusterSize = be->BPB_SecPerClus * be->BPB_BytsPerSec;
-    unsigned int EntryCluster = ClusterSize / sizeof(struct DirEntry);
-    char *lfn = malloc(sizeof(char)*32);
-    char *tempLFNName;
-    char *LFNarray[11];
-    unsigned int LFNnumber = 0;
-    unsigned int cluster;
-    unsigned int startCluster;
-    int entry,fnameLength,LFNlength,totalLFNlength;
-    int countEntry = 1;
-    long currentPoint;
-    char *LFNName = NULL;
-    char fname[13];
-    struct DirEntry *de;
-
-    for(cluster = be->BPB_RootClus; cluster && cluster < 0x0FFFFFF7; cluster = fat[cluster]){
-        fseek(fp,(long)(preSector + cluster * be->BPB_SecPerClus) * be->BPB_BytsPerSec,SEEK_SET);
-        for(entry = 0;entry < EntryCluster;entry++){        
-        de = malloc(sizeof(struct DirEntry));
-        fread(de,sizeof(struct DirEntry),1,fp);
-
-        if(de->DIR_Attr == 0x0f && de->DIR_Name[0] != 0xe5){
-       //     printf("I got a long file name here\n");
-              currentPoint = ftell(fp);
-            fseek(fp,(long)(currentPoint - 32),SEEK_SET);
-            memset(lfn,0,sizeof(char)*32);
-            fread(lfn,(sizeof(char)*32),1,fp);
-           
-            LFNlength=0;
-            tempLFNName = malloc(sizeof(char)*32);
-            for(i=1;i<32;i+=2){
-                if(i == 11){
-                    i+=3;
-                }
-                if(i == 26){
-                continue;
-                }
-                if(lfn[i] == 0){
-                break;
-                }
-                tempLFNName[LFNlength++]=lfn[i];
-                totalLFNlength++;
-            }
-
-            LFNarray[LFNnumber] = malloc(sizeof(char)* (LFNlength +1));
-            memcpy(LFNarray[LFNnumber],tempLFNName,LFNlength);
-            LFNarray[LFNnumber][LFNlength]=0;
-            LFNnumber++;
-            free(tempLFNName);
-
-         }else if(de->DIR_Name[0] != 0 && de->DIR_Name[0] != 0xe5){
-            startCluster = (((unsigned int) de->DIR_FstClusHI << 16) + de->DIR_FstClusLO);
-            fnameLength = checkFileName(fname,de->DIR_Name);
-
-            /* Reading long file name */
-            if(LFNnumber > 0){
-                LFNName = malloc(sizeof(char)*256);
-                for(i=(LFNnumber-1);i>-1;i--){
-                    if(i == (LFNnumber-1)){
-                    strcpy(LFNName,LFNarray[i]);
-                    }else{
-                    strcat(LFNName,LFNarray[i]);
-                    }
-                }
-            LFNName[totalLFNlength]=0;
-
-            if(de->DIR_Attr & 0b00010000){
-                fname[fnameLength++] = '/';
-                fname[fnameLength] = 0;
-                LFNName[totalLFNlength++] = '/';
-                LFNName[totalLFNlength] = 0;
-            }
-
-            printf("%d, %s, %s, %lu, %u\n",countEntry++,fname,LFNName,de->DIR_FileSize,startCluster);
-            free(LFNName);
-            LFNName = NULL;
-
-            }else{
-                if(de->DIR_Attr & 0b00010000){
-                    fname[fnameLength++] = '/';
-                    fname[fnameLength] = 0;
-                }
-                printf("%d, %s, %lu, %u\n",countEntry++,fname,de->DIR_FileSize,startCluster);
-            }
-
-            totalLFNlength=0;
-            LFNnumber=0;
-        }
-
-        }
-    }
-
-    fclose(fp);
+void listDirectory() {
+	int i; unsigned int count = 1;
+	char sname[257], lname[257];
+	for (i=0; i<numDirEntries; i++) {
+		if (dirEntries[i].DIR_Name[0] == 0 || dirEntries[i].DIR_Name[0] == 0xe5 || dirEntries[i].DIR_Attr == 0x0f)
+			continue;
+		getsname(i, sname);
+		printf("%u, %s", count++, sname);
+		getlname(i, lname);
+		if (strlen(lname))
+			printf(", %s", lname);
+		printf(", %u, %u\n", dirEntries[i].DIR_FileSize, (dirEntries[i].DIR_FstClusHI<<16)+dirEntries[i].DIR_FstClusLO);
+	}
 }
 
 int main(int argc, char *argv[]) {
@@ -314,9 +252,15 @@ int main(int argc, char *argv[]) {
         printUsage();
     }
     
+	// get all info first
+	init(diskPath);
+	
     if (iFlag) {
-        showBootSectorInfo(diskPath);
+        showBootSectorInfo();
     }
+	if (lFlag) {
+		listDirectory();
+	}
     
     return 0;
 }
