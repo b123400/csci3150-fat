@@ -89,10 +89,11 @@ void init(char* diskPath) {
 	fread(be, sizeof(struct BootEntry), 1, fp);
 	
 	// get fat table
+	unsigned int fatSizeInByte = (unsigned int)(be->BPB_FATSz32 * be->BPB_BytsPerSec);
 	cluster_size = be->BPB_BytsPerSec * be->BPB_SecPerClus;
 	cluster_total = (be->BPB_TotSec32 - (be->BPB_NumFATs * be->BPB_FATSz32) - be->BPB_RsvdSecCnt)/ be->BPB_SecPerClus;
-	fat = malloc(be->BPB_FATSz32 * be->BPB_BytsPerSec);
-	pread(fileno(fp), fat, be->BPB_FATSz32 * be->BPB_BytsPerSec, be->BPB_RsvdSecCnt * be->BPB_BytsPerSec);
+	fat = malloc(fatSizeInByte);
+	pread(fileno(fp), fat, fatSizeInByte,(unsigned int)(be->BPB_RsvdSecCnt * be->BPB_BytsPerSec));
 	dataOffset = (be->BPB_RsvdSecCnt + be->BPB_NumFATs * be->BPB_FATSz32) * be->BPB_BytsPerSec;
 	
 	// calc root dir entry span
