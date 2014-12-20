@@ -220,7 +220,6 @@ void recoverLongfile(char* diskPath,char target[256],char outputtarget[256]) {
 				filecount++;
 				FirstClus=(dirEntries[index].DIR_FstClusHI<<16)+dirEntries[index].DIR_FstClusLO;
 				if(fat[FirstClus] == 0){
-					printf("%s: recovered\n",target);
 					ReadData = malloc(cluster_size);
 					fPtr = fopen(outputtarget, "w");
 						if(!fPtr){
@@ -230,6 +229,7 @@ void recoverLongfile(char* diskPath,char target[256],char outputtarget[256]) {
 					pread(fileno(fp), ReadData, cluster_size, dataOffset + (FirstClus-2)*cluster_size);
 					fwrite (ReadData ,dirEntries[index].DIR_FileSize, 1, fPtr);
 					fclose(fPtr);
+					printf("%s: recovered\n",target);
 				} else {
 					printf("%s: error - fail to recover\n",target);
 					break;
@@ -320,7 +320,6 @@ void recoverShortfile(char* diskPath,char target[256],char outputtarget[256]) {
 			//printf("%x\n",fat[FirstClus]);
 			if(fat[FirstClus] == 0){
 				//printf("I can recovery.\n");
-				printf("%s: recovered\n",target);
 				ReadData = malloc(cluster_size);
 				fPtr = fopen(outputtarget, "w");
 					if(!fPtr){
@@ -331,6 +330,7 @@ void recoverShortfile(char* diskPath,char target[256],char outputtarget[256]) {
 				pread(fileno(fp), ReadData, cluster_size, dataOffset + (FirstClus-2)*cluster_size);
 				fwrite (ReadData ,dirEntries[index].DIR_FileSize, 1, fPtr);
 				fclose(fPtr);
+				printf("%s: recovered\n",target);
 			} else {
 				printf("%s: error - fail to recover\n",target);
 				break;
