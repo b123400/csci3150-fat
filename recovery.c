@@ -76,10 +76,10 @@ unsigned int cluster_size;
 
 void printUsage() {
     printf("Usage: ./recover -d [device filename] [other arguments]\n");
-    printf("-i                   Print boot sector information\n");
-    printf("-l                   List all the directory entries\n");
-    printf("-r target -o dest    File recovery with 8.3 filename\n");
-    printf("-R target -o dest    File recovert with long filename\n");
+    printf("-i                       Print boot sector information\n");
+    printf("-l                       List all the directory entries\n");
+    printf("-r target -o dest        File recovery with 8.3 filename\n");
+    printf("-R target -o dest        File recovert with long filename\n");
 }
 
 void init(char* diskPath) {
@@ -114,10 +114,10 @@ void init(char* diskPath) {
 }
 
 void showBootSectorInfo() {
-    printf("Number of FATs = %u.\n", be->BPB_NumFATs);
-    printf("Numeber of bytes per sector = %u.\n", be->BPB_BytsPerSec);
-    printf("Numeber of sectors per cluster = %u.\n", be->BPB_SecPerClus);
-    printf("Numeber of reserved sectors = %u.\n", be->BPB_RsvdSecCnt);
+    printf("Number of FATs = %u\n", be->BPB_NumFATs);
+    printf("Numeber of bytes per sector = %u\n", be->BPB_BytsPerSec);
+    printf("Numeber of sectors per cluster = %u\n", be->BPB_SecPerClus);
+    printf("Numeber of reserved sectors = %u\n", be->BPB_RsvdSecCnt);
     
     int i = 0;
     int allocated = 0;
@@ -127,12 +127,12 @@ void showBootSectorInfo() {
         }
     }
     
-    printf("Number of allocated clusters = %u.\n", allocated);
-    printf("Number of free clusters = %u.\n", cluster_total-allocated);   
+    printf("Number of allocated clusters = %u\n", allocated);
+    printf("Number of free clusters = %u\n", cluster_total-allocated);   
 }
 
 void getsname(int index, char *buffer){
-    int i,j;
+    int i;
 	
     for(i=0;i<8;i++){
 		if (dirEntries[index].DIR_Name[i] == ' ') break;
@@ -204,6 +204,152 @@ void listDirectory() {
 	}
 }
 
+void recoverLongfile(char* diskPath,char target[256],char outputtarget[256]) {
+	int index;
+	char buffer[257];
+	char *ReadData;
+	unsigned int FirstClus;
+	int filecount = 0;
+	FILE *fPtr;
+	FILE *fp = fopen(diskPath, "r");
+
+	for (index = 0;index<numDirEntries; index++){
+		if(dirEntries[index].DIR_Name[0] == 0xe5){
+		getlname(index,buffer);
+			if(strcmp(buffer,target) == 0){
+				filecount++;
+				FirstClus=(dirEntries[index].DIR_FstClusHI<<16)+dirEntries[index].DIR_FstClusLO;
+				if(fat[FirstClus] == 0){
+					printf("%s: recovered\n",target);
+					ReadData = malloc(cluster_size);
+					fPtr = fopen(outputtarget, "w");
+						if(!fPtr){
+						printf("%s: failed to open\n",outputtarget);
+						break;
+						}
+					pread(fileno(fp), ReadData, cluster_size, dataOffset + (FirstClus-2)*cluster_size);
+					fwrite (ReadData ,dirEntries[index].DIR_FileSize, 1, fPtr);
+					fclose(fPtr);
+				} else {
+					printf("%s: error - fail to recover\n",target);
+					break;
+				}
+			}
+		}
+	}
+
+	if(filecount == 0){
+		printf("%s: error - file not found\n",target);
+	}
+
+	fclose(fp);
+
+}
+
+void recoverShortfile(char* diskPath,char target[256],char outputtarget[256]) {
+	int i,index,count=0,find = 0;
+	char *buffer;
+	char temptarget[256];
+	unsigned int FirstClus;
+	char *ReadData;
+	FILE *fPtr;
+	FILE *fp = fopen(diskPath, "r");
+	
+	for(i=1;i<256;i++){
+		temptarget[count++] = target[i]; 
+	}
+
+	for (index=0; index<numDirEntries ;index++){
+		buffer = malloc(13);
+		count = 0;
+		if(dirEntries[index].DIR_Name[0] == 0xe5){
+		for(i=1;i<8;i++){
+			if (dirEntries[index].DIR_Name[i] == ' ') break;
+			buffer[count] = dirEntries[index].DIR_Name[i];
+			count++;
+		}
+		if (dirEntries[index].DIR_Name[8] != ' ') {
+			buffer[count] = '.';
+			count++;
+			for(i=8;i<=10;i++){
+				if (dirEntries[index].DIR_Name[i] == ' ') break;
+				buffer[count] = dirEntries[index].DIR_Name[i];
+				count++;
+			}
+		}
+		buffer[count] = 0;
+		}
+		if(strcmp(buffer , temptarget) == 0){
+		find++;
+		}
+	}
+
+	if(find > 1){
+		printf("%s: error - ambiguous\n",target);
+		return;
+	}
+
+	find = 0;
+
+	for (index=0; index<numDirEntries ;index++){
+		buffer = malloc(13);
+		count = 0;
+		if(dirEntries[index].DIR_Name[0] == 0xe5){
+		// printf("I find a deleted file >.<\n");
+		for(i=1;i<8;i++){
+			if (dirEntries[index].DIR_Name[i] == ' ') break;
+			buffer[count] = dirEntries[index].DIR_Name[i];
+			count++;
+		}
+		if (dirEntries[index].DIR_Name[8] != ' ') {
+			buffer[count] = '.';
+			count++;
+			for(i=8;i<=10;i++){
+				if (dirEntries[index].DIR_Name[i] == ' ') break;
+				buffer[count] = dirEntries[index].DIR_Name[i];
+				count++;
+			}
+		}
+		buffer[count] = 0;
+
+		/* find deleted file same as input */
+		if(strcmp(buffer , temptarget) == 0){
+			find = 1;
+			FirstClus=(dirEntries[index].DIR_FstClusHI<<16)+dirEntries[index].DIR_FstClusLO;
+			//printf("%u\n",FirstClus);
+			//printf("%x\n",fat[FirstClus]);
+			if(fat[FirstClus] == 0){
+				//printf("I can recovery.\n");
+				printf("%s: recovered\n",target);
+				ReadData = malloc(cluster_size);
+				fPtr = fopen(outputtarget, "w");
+					if(!fPtr){
+					printf("%s: failed to open\n",outputtarget);
+					// should break here
+					break;
+					}
+				pread(fileno(fp), ReadData, cluster_size, dataOffset + (FirstClus-2)*cluster_size);
+				fwrite (ReadData ,dirEntries[index].DIR_FileSize, 1, fPtr);
+				fclose(fPtr);
+			} else {
+				printf("%s: error - fail to recover\n",target);
+				break;
+			}
+		}
+
+
+		}
+		buffer = NULL;
+		free(buffer);
+	}
+
+	if(find == 0){
+		printf("%s: error - file not found\n",target);
+	}
+
+	fclose(fp);
+}
+
 int main(int argc, char *argv[]) {
     int option = 0;
     int dFlag = 0;
@@ -213,6 +359,8 @@ int main(int argc, char *argv[]) {
     int RFlag = 0;
     int oFlag = 0;
     char diskPath[100];
+	char recovertarget[256];
+	char outputtarget[256];
     while ((option = getopt(argc,argv,"d:ilr:R:o:"))!=-1) {
         switch (option) {
             case 'd':
@@ -224,19 +372,21 @@ int main(int argc, char *argv[]) {
                 break;
             case 'l':
                 lFlag = 1;
-                listDirectory(diskPath);
                 break;
             case 'r':
                 rFlag = 1;
-                printf("small r = recover with 8.3 filename, target: %s\n",optarg);
+             //   printf("small r = recover with 8.3 filename, target: %s\n",optarg);
+				strcpy(recovertarget,optarg);
                 break;
             case 'R':
                 RFlag = 1;
-                printf("large R = recover with long filename, target: %s\n",optarg);
+             //   printf("large R = recover with long filename, target: %s\n",optarg);
+				strcpy(recovertarget,optarg);
                 break;
             case 'o':
                 oFlag = 1;
-                printf("output to: %s\n",optarg);
+             //   printf("output to: %s\n",optarg);
+				strcpy(outputtarget,optarg);
                 break;
             default:
                 printf("unrecognized argument: %c",option);
@@ -244,13 +394,19 @@ int main(int argc, char *argv[]) {
     }
     if (dFlag + iFlag + lFlag + rFlag + RFlag + oFlag == 0) {
         printUsage();
+		return 0;
     } else if (iFlag && lFlag) {
         // wrong usage = print usage
         printUsage();
+		return 0;
     } else if (!iFlag && !lFlag && (!dFlag || !oFlag || (rFlag + RFlag != 1))) {
         // anyway wrong usage, fuck you
         printUsage();
-    }
+		return 0;
+    } else if (optind < argc) {
+		printUsage();
+		return 0;
+	}
     
 	// get all info first
 	init(diskPath);
@@ -261,6 +417,12 @@ int main(int argc, char *argv[]) {
 	if (lFlag) {
 		listDirectory();
 	}
-    
+	if (rFlag) {
+		recoverShortfile(diskPath,recovertarget,outputtarget);
+	}
+	if (RFlag) {
+		recoverLongfile(diskPath,recovertarget,outputtarget);
+	}
+	
     return 0;
 }
